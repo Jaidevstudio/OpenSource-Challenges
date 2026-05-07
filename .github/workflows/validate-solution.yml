@@ -1,0 +1,77 @@
+name: Validate Challenge Solution
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - 'challenges/**/solutions/**'
+
+jobs:
+  validate-solution:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate solution structure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          ERRORS=""
+          SOLUTIONS_FOUND=0
+
+          # Find all solution directories added in this PR
+          for sol_dir in challenges/*/solutions/*/; do
+            [ ! -d "$sol_dir" ] && continue
+            SOLUTIONS_FOUND=$((SOLUTIONS_FOUND + 1))
+
+            WEEK=$(echo "$sol_dir" | cut -d/ -f2)
+            USERNAME=$(echo "$sol_dir" | cut -d/ -f4)
+
+            # Check solution has at least one code file
+            FILE_COUNT=$(find "$sol_dir" -type f -not -name "README.md" | wc -l)
+            if [ "$FILE_COUNT" -eq 0 ]; then
+              ERRORS="$ERRORS\n- **$WEEK/$USERNAME**: No solution file found. Add your code file."
+            fi
+
+            # Check for README
+            if [ ! -f "${sol_dir}README.md" ]; then
+              ERRORS="$ERRORS\n- **$WEEK/$USERNAME**: Missing README.md. Add a brief explanation of your approach."
+            fi
+          done
+
+          if [ "$SOLUTIONS_FOUND" -eq 0 ]; then
+            echo "No solutions found in PR, skipping validation"
+            exit 0
+          fi
+
+          if [ -n "$ERRORS" ]; then
+            COMMENT="## Solution Check\n\nPlease fix the following:\n$ERRORS\n\nEach solution folder should contain:\n- Your solution code file (any language)\n- A README.md explaining your approach\n\n---\n*Automated validation*"
+            COMMENT_JSON=$(echo -e "$COMMENT" | jq -Rs .)
+
+            curl -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": $COMMENT_JSON}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
+          else
+            COMMENT="## Solution Submitted\n\n$SOLUTIONS_FOUND solution(s) found and structure looks good. A maintainer will review your approach.\n\nGreat work, @$PR_AUTHOR!\n\n---\n*Automated validation*"
+            COMMENT_JSON=$(echo -e "$COMMENT" | jq -Rs .)
+
+            curl -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": $COMMENT_JSON}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
+
+            # Add label
+            curl -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d '{"labels":["solution"]}' \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/labels"
+          fi
